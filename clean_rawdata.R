@@ -8,15 +8,15 @@ library(bit64)
 library(waterfalls)
 library(ggplot2)
 library(jsonlite)
-
+library(rlist)
 # 结构化同盾数据- 个人风险概要
 clean.borrower_risk <- function(data.borrower_risk){
   data.borrower_risk <- data.borrower_risk[!is.na(data)]
   data.tongdun.sql <- NULL
   for (i in 1:nrow(data.borrower_risk)){
+    b.excute <- function(data.borrower_risk,i){
     b <- fromJSON(data.borrower_risk$data[i]%>%toString(),flatten = FALSE)$data
-    b$user_id <- data.borrower_risk$user_id[i]
-    b.excute <- function(b){
+    
       # 取出比较麻烦的risk_items
       b1 <- b$risk_items
       b1.1 <- b1
@@ -38,8 +38,9 @@ clean.borrower_risk <- function(data.borrower_risk){
       ;
       bbb
     }
-    tryCatch(data.tongdun.sql <- rbind(data.tongdun.sql,b.excute(b)),
-             error=function(e){print(paste(i,"此记录未处理"))}
+    tryCatch(data.tongdun.sql <- rbind(data.tongdun.sql,b.excute(data.borrower_risk,i)),
+             error=function(e){print(paste(i,"此记录未处理"))},
+               warning=function(w){print(paste(i,"啥情况?"))}
     )
   }
   data.tongdun.sql <- data.table(data.tongdun.sql)%>%unique();
@@ -51,7 +52,9 @@ clean.sauron <- function(data.sauron){
   data.sauron <- data.sauron[!is.na(report_detail_data)]
   data.sauron.sql <- data.table()
   for (i in 1: nrow(data.sauron)){
-    data.sauron.sql <- fromJSON(data.sauron$report_detail_data[i]%>%toString(),flatten = TRUE)$data %>% data.table()%>% rbind(data.sauron.sql)
+    temp.1 <- fromJSON(data.sauron$report_detail_data[i]%>%toString(),flatten = TRUE)$data
+    temp.1 <- list.flatten(temp.1)
+    data.sauron.sql <- temp.1 %>%data.frame(stringsAsFactors = FALSE) %>% data.table()%>% rbind(data.sauron.sql)
   }
   data.sauron.sql <- cbind(data.sauron,data.sauron.sql)%>%unique();
   data.sauron.sql

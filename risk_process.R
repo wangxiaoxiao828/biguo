@@ -7,7 +7,8 @@ library(mailR)
 library(bit64)
 library(waterfalls)
 library(ggplot2)
-
+library(rlist)
+library(splitstackshape)
 
 # 个人风险概要检测
 # D901,D105,D106,D107,D108,D110,D111,D112,D207,D208,D209,D210,D211检测
