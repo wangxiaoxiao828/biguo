@@ -10,7 +10,8 @@ library(ggplot2)
 # 从服务器取出当天及历史数据
 
 fetch.rawdata <- function(){
-  con <- dbConnect(MySQL(),host="47.96.167.191",dbname="db_coupon",user="guannihua",password='T3D8{xSGqEhtYZs2')
+  # con <- dbConnect(MySQL(),host="47.96.167.191",dbname="db_coupon",user="guannihua",password='T3D8{xSGqEhtYZs2')
+  con <- dbConnect(MySQL(),host="47.96.167.191",dbname="db_coupon",user="gnh_read",password='T3D8[xSGqEhtYZs3')
   dbSendQuery(con,'set names gbk')
   # 借款人风险概要/同盾
   res <- dbSendQuery(con, iconv(paste0("select * from tb_borrower_risk_log where create_at >='2018-08-14';"),'CP936','UTF-8'))

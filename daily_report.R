@@ -1,10 +1,25 @@
+rm(list=ls())
 args<-commandArgs(T)
-# args[1] 业务报表
-# args[2] 风控报表
-# args[3] date.max 统计当天日期
-control.yewu <- args[1]
-control.fengkong <- args[2]
-date.max <- args[3]
+# args[1] 业务报表取1或0
+# args[2] 风控报表取1或0
+# args[3] 统计当天日期取1, 统计前一天取0
+
+switch.yewu <- args[1]
+switch.fengkong <- args[2]
+switch.date.max <- args[3]
+
+# switch.yewu <- '1'
+# switch.fengkong <- '1'
+# switch.date.max <- '1'
+
+
+
+print(switch.yewu)
+print(switch.fengkong)
+print(switch.date.max)
+if(switch.date.max=='1'){date.max=Sys.Date()}
+if(switch.date.max=='0'){date.max=Sys.Date()-1}
+print(date.max)
 
 library(RMySQL)
 library(data.table)
@@ -16,9 +31,10 @@ library(bit64)
 library(waterfalls)
 library(ggplot2)
 library(jsonlite)
-rm(list=ls())
+
 setwd("/data/temp/wangxx/biguo")
 source("fetch_rawdata.R")
+rj_code <- read.xlsx("/data/temp/wangxx/拒绝原因编码.xlsx",sheet=1)%>%data.table()
 l <- fetch.rawdata()
 data.all <- l[[1]]
 data.borrower_risk <- l[[2]]
@@ -41,75 +57,106 @@ data.sauron.sql <- clean.sauron(data.sauron = data.sauron[create_at>='2018-08-14
 
 #处理总览
 
-# 生成用户状态表data.exc   user_id, audit_status, audit_code, create_at, update_at, date
+# 生成用户状态表data.exc   user_id, audit_status, audit_code, date
 
-data.paid <- data.pay[status==1][type==1][,.(date= min(create_at)%>%substr(1,10)),.(user_id)] #已支付1.99用户,日期为支付订单建立时间
+#已支付1.99用户,日期为用户最早支付1.99建立时间
+data.paid <- data.pay[status==1][type==1][,.(date= min(create_at)%>%substr(1,10)),.(user_id)] 
 
-rj_code <- read.xlsx("/data/temp/wangxx/拒绝原因编码.xlsx",sheet=1)%>%data.table()
-data.exc <- data.all[,.(user_id,audit_status,audit_code,create_at,update_at)]%>%unique()
+
+data.exc <- data.all[,.(user_id,audit_status,audit_code)]%>%unique()
 data.exc <- merge(data.exc,data.paid,by.x = 'user_id',by.y = 'user_id')
 
+data.exc[audit_status==2]$audit_code <- 'D000'
 data.exc[audit_status==1]$audit_code <- 'approve'
 data.exc[audit_status==-1][user_id %in% data.paid$user_id]$audit_code <- 'D001'
-data.exc <- data.exc[create_at>='2018-08-14 15:55:00']
-if(nchar(date.max)!=10){date.max <- max(data.exc$date)}
+#data.exc <- data.exc[create_at>='2018-08-14 15:55:00']
+
 #date.max <- '2018-08-16'
 data.exc <- data.exc[date<=date.max]
 
 
-# 从订单角度: 生成业务表
-
-data.order <- data.pay[,.(order_no,user_id,status,type,date=substr(create_at,1,10))][date<=date.max]
-data.order[,.(n=uniqueN(user_id)),.(type,date,status)]
-data.order <- merge(data.order,data.exc[audit_status%in%c(-1,0,1)][,-c('date')],by.x = 'user_id',by.y = 'user_id')
+# 从订单角度: 生成业务表 
+# order_no, user_id, price, status, type, date_order, audit_status, audit_code, date, pay_type
+data.pay[is.na(update_at)]$update_at <- data.pay[is.na(update_at)]$create_at
+data.order <- data.pay[,.(order_no,user_id,price,status,type,date_order=substr(update_at,1,10))][date_order<=date.max]
+#data.order[,.(n=uniqueN(user_id)),.(type,date_order,status)]
+data.order <- merge(data.order,data.exc[audit_status%in%c(-1,0,1,2)],by.x = 'user_id',by.y = 'user_id')
 
 data.order$type <- as.character(data.order$type)
-data.order[type==1]$type <- '1.99'
-data.order[type==2]$type <- '50'
+data.order[type==1]$type <- '申请'
+data.order[type==2]$type <- '神券'
 data.order$status <- as.character(data.order$status)
 data.order[status==1]$status <- '已支付'
 data.order[status==0]$status <- '未支付'
 data.order <- merge(data.order,data.pay.detail[,.(order_no,pay_type)],by.x = 'order_no',by.y = 'order_no')
 
-# 获取日期+支付方式~支付笔数+支付50
-data.order.wide <-  dcast.data.table(data.order[,.(n=uniqueN(order_no)),.(type,date,status,pay_type)],date+pay_type~ type+status,value.var = 'n')
+
+# 获取日期+支付方式~支付笔数+支付50笔数
+data.order.wide <-  dcast.data.table(data.order,date_order+pay_type~ type+status,value.var = 'order_no',fun.aggregate = uniqueN)
 data.order.wide[is.na(data.order.wide)] <- 0
-data.yewu.1 <- data.order.wide[,.(日期=date,支付方式=pay_type,支付1.99笔数=`1.99_已支付`,支付50=`50_已支付`)]
+data.yewu.1 <- data.order.wide[,.(日期=date_order,支付方式=pay_type,支付申请笔数=`申请_已支付`,支付神券笔数=`神券_已支付`)]
 
 # 获取日期+支付方式~申请人数+支付人数+支付50人数
-data.order.2 <- data.order[,.(user_id,status,type,date,pay_type)]%>%unique()
-data.order.wide.2 <-  dcast.data.table(data.order[,.(n=uniqueN(user_id)),.(type,date,status,pay_type)],date+pay_type~ type+status,value.var = 'n')
+
+data.order.wide.2 <-  dcast.data.table(data.order,date_order+pay_type~ type+status,value.var = 'user_id',fun.aggregate = uniqueN)
 data.order.wide.2[is.na(data.order.wide.2)] <- 0
-data.yewu.2 <- data.order.wide.2[,.(日期=date,支付方式=pay_type,申请人数=`1.99_已支付`+`1.99_未支付`,支付人数=`1.99_已支付`,支付50人数=`50_已支付`)]
+data.yewu.2 <- data.order.wide.2[,.(日期=date_order,支付方式=pay_type,申请人数=`申请_已支付`+`申请_未支付`,支付人数=`申请_已支付`,支付神券人数=`神券_已支付`)]
 
 # 获取日期+支付方式~通过人数
-data.yewu.3 <- data.order[audit_status==1][type==1.99][,.(n=uniqueN(user_id)),.(date,pay_type)]
+data.yewu.3 <- data.order[audit_status==1][type %in% c('申请')][,.(n=uniqueN(user_id)),.(date,pay_type)]
 data.yewu.3 <- data.yewu.3[,.(日期=date, 支付方式=pay_type, 通过人数=n)]
 
-data.yewu.final <- merge(data.yewu.2[,-c('支付50人数')],data.yewu.1,by.x = c('日期','支付方式'),by.y = c('日期','支付方式')) %>% 
-  merge(data.yewu.3,by.x = c('日期','支付方式'),by.y = c('日期','支付方式'))
+data.yewu.final <- merge(data.yewu.2,data.yewu.1,by.x = c('日期','支付方式'),by.y = c('日期','支付方式'),all = TRUE) %>% 
+  merge(data.yewu.3,by.x = c('日期','支付方式'),by.y = c('日期','支付方式'),all = TRUE)
+data.yewu.final[is.na(data.yewu.final)] <- 0
 
-data.yewu.final$总计 <- (1.99*data.yewu.final$支付1.99笔数+50*data.yewu.final$支付50)%>%as.character()
-data.yewu.final <- data.yewu.final[,.(日期,支付方式,申请人数,支付人数,支付1.99笔数,通过人数,支付50,总计)]
+data.order.wide.3 <-  dcast.data.table(data.order,date_order+pay_type~ type+status+price,value.var = c('user_id','order_no'),fun.aggregate = uniqueN)
+data.order.wide.3 <- within(data.order.wide.3,总计 <- 1.99*`order_no_申请_已支付_1.99`+4.99*`order_no_申请_已支付_4.99`+50*`order_no_神券_已支付_50`)
+data.yewu.final$总计 <- data.order.wide.3$总计
+data.yewu.final <- data.yewu.final[,.(日期,支付方式,申请人数,支付人数,支付申请笔数,通过人数,支付神券人数,支付神券笔数,总计)]
 
 
 # 生成日期~甲方+人数+当天总计
-appid.table <- data.table(appid='201807300001',product_name='机花花')
+appid.table <- data.table(appid=c('201807300001'),product_name=c('机花花'))
 data.confirmed <- merge(data.confirmed,appid.table,by.x = 'appid',by.y = 'appid')
 data.confirmed[is.na(data.confirmed)] <- ''
 data.yewu.4<- data.confirmed[,.(date=max(create_at,update_at)%>%substr(1,10)),.(product_name,name,mobile,idcard,bank_card,status)]
 data.yewu.4 <- data.yewu.4[status==1][,.(n=uniqueN(mobile)),.(日期=date,product_name)]
 data.yewu.4 <- dcast.data.table(data.yewu.4,日期~product_name,value.var='n')
 data.yewu.4$金额 <- 150*data.yewu.4$机花花
-data.yewu.final.2 <- data.yewu.1[,.(支付1.99笔数=sum(支付1.99笔数),支付50=sum(支付50)),.(日期)]%>%merge(data.yewu.4,by.x = '日期',by.y='日期',all=TRUE)
+#data.yewu.final.2 <- data.yewu.1[,.(支付申请笔数=sum(支付申请笔数),支付神券笔数=sum(支付神券笔数)),.(日期)]%>%merge(data.yewu.4,by.x = '日期',by.y='日期',all=TRUE)
+data.yewu.final.2 <- data.yewu.final[,.(支付申请笔数=sum(支付申请笔数),支付神券笔数=sum(支付神券笔数),总计=sum(总计)),.(日期)]%>%merge(data.yewu.4,by.x = '日期',by.y='日期',all=TRUE)
+
 data.yewu.final.2[is.na(data.yewu.final.2)] <- 0
-data.yewu.final.2$总计 <- (1.99*data.yewu.final.2$支付1.99笔数+50*data.yewu.final.2$支付50+data.yewu.final.2$金额)%>%as.character()
+data.yewu.final.2$总计 <- data.yewu.final.2$总计+data.yewu.final.2$金额
 
+data.yewu.final.2 <- data.yewu.final.2[,.(日期,支付申请笔数,支付神券笔数,机花花,金额,总计)]
 
+# 生成甲方已验证四要素 data.confirmed.jiafang
+data.confirmed.jiafang <- data.confirmed[status%in%c(0,1)][,.(product_name,name,mobile,idcard,bank_card,create_at,status)][substr(create_at,1,10)==date.max]%>%unique()
+data.confirmed.jiafang$status <- as.character(data.confirmed.jiafang$status)
+data.confirmed.jiafang[status=='1']$status <- '已通过'
+data.confirmed.jiafang[status=='0']$status <- '未通过'
+
+# 生成支付神券名单
+data.order.shenquan <- (data.order[type=='神券'][date_order==date.max]%>%merge(data.four_ele,by.x = 'user_id',by.y = 'user_id'))[,.(status,type,real_name,card_no,issuing,reserved_phone,date_order)]
+
+data.yewu.final$总计 <- data.yewu.final$总计 %>% as.character()
+data.yewu.final.2$总计 <- data.yewu.final.2$总计 %>% as.character()
 HTML(data.yewu.final,file = "daily_report_yewu.html", append = FALSE, innerBorder = 1, Border = 1, row.names = FALSE)
 HTML(data.yewu.final.2,file = "daily_report_yewu.html", append = TRUE, innerBorder = 1, Border = 1, row.names = FALSE)
-
-
+if( nrow(data.confirmed.jiafang)!=0){
+  HTML(data.confirmed.jiafang,file = "daily_report_confirmed.html", append = FALSE, innerBorder = 1, Border = 1, row.names = FALSE)
+}
+if( nrow(data.confirmed.jiafang)==0){
+  HTML('本日尚无查询四要素',file = "daily_report_confirmed.html", append = FALSE, innerBorder = 1, Border = 1, row.names = FALSE)
+}
+if( nrow(data.order.shenquan)!=0){
+  HTML(data.order.shenquan,file = "daily_report_confirmed.html", append = TRUE, innerBorder = 1, Border = 1, row.names = FALSE)
+}
+if( nrow(data.order.shenquan)==0){
+  HTML('本日尚无支付神券行为',file = "daily_report_confirmed.html", append = TRUE, innerBorder = 1, Border = 1, row.names = FALSE)
+}
 # 生成业务表 日期-申请人数-通过人数-通过率 
 # data.yewu <- data.exc[audit_status%in%c(-1,0,1)][,.(total=length(user_id),approve=which(audit_status==1)%>%length()),.(date)]
 # setorder(data.yewu,date)
@@ -119,6 +166,9 @@ HTML(data.yewu.final.2,file = "daily_report_yewu.html", append = TRUE, innerBord
 # colnames(data.yewu.tosend) <- c('日期','新申请人数','通过','通过率')
 # data.tosend <- merge(data.yewu,data.paid.cum,by.x = 'date',by.y = '日期')
 data.risk.approve <- data.yewu.final[,.(申请人数=sum(申请人数),支付人数=sum(支付人数),支付率=(sum(支付人数)/sum(申请人数))%>%substr(1,5),通过人数=sum(通过人数),通过率=(sum(通过人数)/sum(支付人数))%>%substr(1,5)),.(日期)]
+# data.risk.approve.1 <- data.order[audit_status==1][type %in% c('申请')][,.(通过人数=uniqueN(user_id)),.(日期=date)]
+# data.risk.approve.2 <- data.order[status=='已支付'][type %in% c('申请')][,.(支付人数=uniqueN(user_id)),.(日期=date)]
+# data.risk.approve.3 <- data.exc[type %in% c('申请')][,.(申请人数=uniqueN(user_id)),.(日期=date)]
 
 #HTML(data.yewu.final,file = "daily_report.html", append = FALSE, innerBorder = 1, Border = 1, row.names = FALSE)
 HTML(data.risk.approve,file = "daily_report.html", append = FALSE, innerBorder = 1, Border = 1, row.names = FALSE)
@@ -166,7 +216,7 @@ waterfall.2 <- waterfall(.data=b[,.(type,n)]
           )+labs(title = paste(date.max,"人数-拒绝机构"))+theme(plot.title = element_text(hjust = 0.5))
 
 # a.his用于作历史瀑布图
-a.his <- data.exc[create_at>='2018-08-14'][date<date.max][,.(n=length(user_id)),.(audit_code)][!is.na(audit_code)]
+a.his <- data.exc[date<date.max][,.(n=length(user_id)),.(audit_code)][!is.na(audit_code)]
 a.his$n <- -a.his$n
 a.his <- rbind(a.his,data.frame(audit_code='total',n=-sum(a.his$n)))
 a.his <- merge(a.his,rj.order,by.x = 'audit_code',by.y = 'audit_code')
@@ -262,35 +312,52 @@ waterfall.2
 waterfall.3
 waterfall.4
 
-send.mail(from = "wangxiaoxiao@lishu-fd.com",
-          #to = c("wangxiaoxiao@lishu-fd.com","lingsn@lishu-fd.com","jiangbo@lishu-fd.com","xiawenqing@lishu-fd.com","wangzhifeng@lishu-fd.com","wujiahao@lishu-fd.com"),
-          to = c("wangxiaoxiao@lishu-fd.com"),
-          subject = paste(date.max,'daily_report'),
-          body = c("daily_report_yewu.html"),
-          smtp = list(host.name = "smtp.exmail.qq.com", port = 465, user.name = "wangxiaoxiao@lishu-fd.com", passwd = "Wxx2554589", ssl = TRUE),
-          authenticate = TRUE,
-          send = TRUE,
-          debug = FALSE,
-          #indicating body should be parsed as html.
-          html <- TRUE,
-          #attach.files = attach.files,
-          encoding = "utf-8"
-)
+if(switch.yewu=='1'){
+  send.mail(from = "wangxiaoxiao@lishu-fd.com",
+            to = c("wangxiaoxiao@lishu-fd.com","lingsn@lishu-fd.com","jiangbo@lishu-fd.com","xiawenqing@lishu-fd.com","wangzhifeng@lishu-fd.com","wujiahao@lishu-fd.com","yindw@lishu-fd.com"),
+            #to = c("wangxiaoxiao@lishu-fd.com"),
+            subject = paste(date.max,'daily_report'),
+            body = c("daily_report_yewu.html"),
+            smtp = list(host.name = "smtp.exmail.qq.com", port = 465, user.name = "wangxiaoxiao@lishu-fd.com", passwd = "Wxx2554589", ssl = TRUE),
+            authenticate = TRUE,
+            send = TRUE,
+            debug = FALSE,
+            #indicating body should be parsed as html.
+            html <- TRUE,
+            #attach.files = attach.files,
+            encoding = "utf-8"
+  )
+  send.mail(from = "wangxiaoxiao@lishu-fd.com",
+            to = c("wangxiaoxiao@lishu-fd.com","lingsn@lishu-fd.com","xiawenqing@lishu-fd.com"),
+            #to = c("wangxiaoxiao@lishu-fd.com"),
+            subject = paste(date.max,'甲方已验证四要素'),
+            body = c("daily_report_confirmed.html"),
+            smtp = list(host.name = "smtp.exmail.qq.com", port = 465, user.name = "wangxiaoxiao@lishu-fd.com", passwd = "Wxx2554589", ssl = TRUE),
+            authenticate = TRUE,
+            send = TRUE,
+            debug = FALSE,
+            #indicating body should be parsed as html.
+            html <- TRUE,
+            #attach.files = attach.files,
+            encoding = "utf-8"
+  )
+}
 
-send.mail(from = "wangxiaoxiao@lishu-fd.com",
-          to = c("wangxiaoxiao@lishu-fd.com","yindw@lishu-fd.com"),
-          #to = c("wangxiaoxiao@lishu-fd.com"),
-          subject = paste(date.max,'daily_report 附风控'),
-          body = c("daily_report.html"),
-          smtp = list(host.name = "smtp.exmail.qq.com", port = 465, user.name = "wangxiaoxiao@lishu-fd.com", passwd = "Wxx2554589", ssl = TRUE),
-          authenticate = TRUE,
-          send = TRUE,
-          debug = FALSE,
-          #indicating body should be parsed as html.
-          html <- TRUE,
-          attach.files = c('daily_report.pdf',paste0("日常报告",date.max,".xlsx")),
-          encoding = "utf-8"
-)
-
+if(switch.fengkong=='1'){
+  send.mail(from = "wangxiaoxiao@lishu-fd.com",
+            to = c("wangxiaoxiao@lishu-fd.com","yindw@lishu-fd.com"),
+            #to = c("wangxiaoxiao@lishu-fd.com"),
+            subject = paste(date.max,'daily_report 附风控'),
+            body = c("daily_report.html"),
+            smtp = list(host.name = "smtp.exmail.qq.com", port = 465, user.name = "wangxiaoxiao@lishu-fd.com", passwd = "Wxx2554589", ssl = TRUE),
+            authenticate = TRUE,
+            send = TRUE,
+            debug = FALSE,
+            #indicating body should be parsed as html.
+            html <- TRUE,
+            attach.files = c('daily_report.pdf',paste0("日常报告",date.max,".xlsx")),
+            encoding = "utf-8"
+  )
+}
 
 
